@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
+import argparse
+import subprocess
+from pathlib import Path
+import sys
 import re
 import logging
-from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -14,9 +17,10 @@ logger = logging.getLogger(__name__)
 def parse_variables(content):
     """Parse ansible-doc output and extract variable information."""
     # Split into role sections
-    role_sections = re.split(r'>\s+(.+)\s+\(', content)[1:]
+    role_sections = re.split(r'>\s+(.+)\s*', content)[1:]
     result = []
-    
+    role_blocks = []
+
     # Process each role section 
     for i in range(0, len(role_sections), 2):
         role_name = role_sections[i].strip()
@@ -51,21 +55,34 @@ def parse_variables(content):
             variables.append("")  # Empty line for readability
             vars_processed += 1
 
-        # Add the formatted variables to the result, if any were found
+        # Add the formatted variables to the role_blocks, if any were found
         if len(variables) != 0:
             logger.info(f"Found {vars_processed} variables for role {role_name}")
-            result.append(f"\n#### {role_name}")
-            result.append("################################################################\n")
-            result.append('\n'.join(variables))
+            block = f"\n#### {role_name}\n################################################################\n" + '\n'.join(variables)
+            role_blocks.append((role_name.lower(), block))
         else:
             logger.debug(f"No public variables found for role {role_name}")
-    
+
+    # Sort role_blocks alphabetically by role_name
+    for _, block in sorted(role_blocks):
+        result.append(block)
+        
     return result
 
-def main():
-    project_root = Path.cwd()
+def generate_variables_file(roles_dir, roles, variables_path):
+    try:
+        subprocess.run(
+            ["ansible-doc", "-t", "role", "-r", str(roles_dir)] + roles,
+            check=True,
+            stdout=variables_path.open("w"),
+        )
+        print(f"Generated {variables_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"Error running ansible-doc: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def generate_example_config(project_root):
     vars_file = project_root / "VARIABLES"
-    
     if not vars_file.exists():
         logger.error(
             "VARIABLES file not found. "
@@ -98,5 +115,58 @@ def main():
         logger.error(f"Error processing variables: {e}")
         return 1
 
+def cleanup_variables_file(variables_path):
+    """Remove everything after the role name in the VARIABLES file header lines."""
+    pattern = re.compile(r'^(>\s+\w+).*$', re.MULTILINE)
+    with variables_path.open("r") as f:
+        content = f.read()
+    # Replace lines like '> NGINX    (/path/to/role)' with '> NGINX'
+    cleaned = re.sub(r'^(>\s+\S+).*$', r'\1', content, flags=re.MULTILINE)
+    with variables_path.open("w") as f:
+        f.write(cleaned)
+    logger.info(f"Cleaned up role paths in {variables_path}")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate documentation for Ansible roles."
+    )
+    parser.add_argument(
+        "playbook_root",
+        nargs="?",
+        default=".",
+        help="Path to the playbook root (default: current directory)"
+    )
+    args = parser.parse_args()
+
+    playbook_root = Path(args.playbook_root).resolve()
+    script_dir = Path(__file__).parent.resolve()
+    print(f"Generating documentation in {script_dir}")
+
+    roles_dir = playbook_root / "roles"
+    if not roles_dir.is_dir():
+        print(f"Roles directory not found: {roles_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    # Find roles
+    roles = sorted([
+        d.name for d in roles_dir.iterdir()
+        if d.is_dir() and not d.name.startswith('.')
+    ])
+
+    if not roles:
+        print("No roles found.", file=sys.stderr)
+        sys.exit(1)
+
+    # Generate VARIABLES file
+    variables_path = playbook_root / "VARIABLES"
+    generate_variables_file(roles_dir, roles, variables_path)
+
+    # Clean up VARIABLES file to hide role paths
+    cleanup_variables_file(variables_path)
+
+    # Generate example config
+    result = generate_example_config(playbook_root)
+    sys.exit(result)
+
 if __name__ == "__main__":
-    exit(main())
+    main()

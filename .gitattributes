@@ -1,0 +1,6 @@
+# Always normalize text files to LF
+* text=auto eol=lf
+
+# Whitespace rules
+# strict (no trailing, no tabs)
+*.yaml    whitespace=trailing-space,space-before-tab,tab-in-indent,cr-at-eol
